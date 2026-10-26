@@ -1,24 +1,13 @@
 // ============================================================================
 // REQUEST - TikTok Account Manager (Official APIs Only)
-// ============================================================================
-// Uses OAuth 2.0 + PKCE, official TikTok Display API & Content Posting API.
-// No session stealing, no unofficial endpoints.
-//
-// BEFORE RUNNING:
-// 1. Create app at https://developers.tiktok.com/
-// 2. Get Client Key & Client Secret.
-// 3. Enable scopes: user.info.basic, user.info.profile, user.info.stats,
-//    video.list, video.upload, video.publish.
-// 4. Add redirect URI: request://callback
-// 5. Deploy the Node.js backend (see bottom of file) and set backendBaseUrl.
-// 6. AndroidManifest.xml: add intent-filter for scheme "request", host "callback".
-// 7. Info.plist (iOS): add CFBundleURLSchemes with "request".
+// OAuth 2.0 + PKCE | Display API | Content Posting API
 // ============================================================================
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
@@ -37,14 +26,9 @@ import 'package:url_launcher/url_launcher.dart';
 // ============================================================================
 
 class AppConfig {
-  // TODO: Replace with your TikTok Client Key
   static const String clientKey = 'YOUR_TIKTOK_CLIENT_KEY';
-
-  // Must match the redirect URI registered in TikTok Developer Portal
   static const String redirectUri = 'request://callback';
   static const String callbackScheme = 'request';
-
-  // TODO: Deploy the backend and put its URL here
   static const String backendBaseUrl = 'https://your-backend.example.com';
 
   static const List<String> scopes = [
@@ -58,13 +42,9 @@ class AppConfig {
 
   static const String tiktokAuthUrl = 'https://www.tiktok.com/v2/auth/authorize/';
   static const String tiktokApiBase = 'https://open.tiktokapis.com/v2';
-  static const String tiktokTokenUrl = 'https://open.tiktokapis.com/v2/oauth/token/';
-  static const String tiktokRevokeUrl = 'https://open.tiktokapis.com/v2/oauth/revoke/';
 
-  // TikTok chunk rules (Media Transfer Guide, Aug 2026)
-  static const int minChunkSize = 5 * 1024 * 1024;   // 5 MB
-  static const int maxChunkSize = 64 * 1024 * 1024;  // 64 MB
-  static const int maxVideoSize = 128 * 1024 * 1024; // 128 MB
+  static const int maxChunkSize = 64 * 1024 * 1024;
+  static const int maxVideoSize = 128 * 1024 * 1024;
   static const int maxVideosPerPage = 20;
 }
 
@@ -98,13 +78,13 @@ class AuthTokens {
         'issued_at': issuedAt.toIso8601String(),
       };
 
-  factory AuthTokens.fromJson(Map<String, dynamic> json) => AuthTokens(
-        accessToken: json['access_token'] ?? '',
-        refreshToken: json['refresh_token'] ?? '',
-        openId: json['open_id'] ?? '',
-        expiresIn: json['expires_in'] ?? 86400,
-        issuedAt: json['issued_at'] != null
-            ? DateTime.parse(json['issued_at'])
+  factory AuthTokens.fromJson(Map<String, dynamic> j) => AuthTokens(
+        accessToken: j['access_token'] ?? '',
+        refreshToken: j['refresh_token'] ?? '',
+        openId: j['open_id'] ?? '',
+        expiresIn: j['expires_in'] ?? 86400,
+        issuedAt: j['issued_at'] != null
+            ? DateTime.parse(j['issued_at'])
             : DateTime.now(),
       );
 }
@@ -136,19 +116,33 @@ class TikTokUser {
     required this.videoCount,
   });
 
-  factory TikTokUser.fromJson(Map<String, dynamic> json) => TikTokUser(
-        openId: json['open_id'] ?? '',
-        unionId: json['union_id'] ?? '',
-        displayName: json['display_name'] ?? 'TikTok User',
-        avatarUrl: json['avatar_url'] ?? '',
-        bioDescription: json['bio_description'] ?? '',
-        isVerified: json['is_verified'] ?? false,
-        profileDeepLink: json['profile_deep_link'] ?? '',
-        followerCount: json['follower_count'] ?? 0,
-        followingCount: json['following_count'] ?? 0,
-        likesCount: json['likes_count'] ?? 0,
-        videoCount: json['video_count'] ?? 0,
+  factory TikTokUser.fromJson(Map<String, dynamic> j) => TikTokUser(
+        openId: j['open_id'] ?? '',
+        unionId: j['union_id'] ?? '',
+        displayName: j['display_name'] ?? 'TikTok User',
+        avatarUrl: j['avatar_url'] ?? '',
+        bioDescription: j['bio_description'] ?? '',
+        isVerified: j['is_verified'] ?? false,
+        profileDeepLink: j['profile_deep_link'] ?? '',
+        followerCount: j['follower_count'] ?? 0,
+        followingCount: j['following_count'] ?? 0,
+        likesCount: j['likes_count'] ?? 0,
+        videoCount: j['video_count'] ?? 0,
       );
+
+  Map<String, dynamic> toJson() => {
+        'open_id': openId,
+        'union_id': unionId,
+        'display_name': displayName,
+        'avatar_url': avatarUrl,
+        'bio_description': bioDescription,
+        'is_verified': isVerified,
+        'profile_deep_link': profileDeepLink,
+        'follower_count': followerCount,
+        'following_count': followingCount,
+        'likes_count': likesCount,
+        'video_count': videoCount,
+      };
 }
 
 class TikTokVideo {
@@ -178,24 +172,24 @@ class TikTokVideo {
     required this.shareCount,
   });
 
-  factory TikTokVideo.fromJson(Map<String, dynamic> json) => TikTokVideo(
-        id: json['id'] ?? '',
-        title: json['title'] ?? '',
-        description: json['video_description'] ?? '',
-        duration: json['duration'] ?? 0,
-        coverUrl: json['cover_image_url'] ?? '',
-        shareUrl: json['share_url'] ?? '',
+  factory TikTokVideo.fromJson(Map<String, dynamic> j) => TikTokVideo(
+        id: j['id'] ?? '',
+        title: j['title'] ?? '',
+        description: j['video_description'] ?? '',
+        duration: j['duration'] ?? 0,
+        coverUrl: j['cover_image_url'] ?? '',
+        shareUrl: j['share_url'] ?? '',
         createTime: DateTime.fromMillisecondsSinceEpoch(
-            (json['create_time'] ?? 0) * 1000),
-        viewCount: json['view_count'] ?? 0,
-        likeCount: json['like_count'] ?? 0,
-        commentCount: json['comment_count'] ?? 0,
-        shareCount: json['share_count'] ?? 0,
+            (j['create_time'] ?? 0) * 1000),
+        viewCount: j['view_count'] ?? 0,
+        likeCount: j['like_count'] ?? 0,
+        commentCount: j['comment_count'] ?? 0,
+        shareCount: j['share_count'] ?? 0,
       );
 }
 
 // ============================================================================
-// 3. SECURE STORAGE SERVICE (Android Keystore / iOS Keychain)
+// 3. SECURE STORAGE
 // ============================================================================
 
 class SecureStorageService {
@@ -206,9 +200,8 @@ class SecureStorageService {
   static const _kTokens = 'request_auth_tokens';
   static const _kUser = 'request_cached_user';
 
-  Future<void> saveTokens(AuthTokens tokens) async {
-    await _storage.write(key: _kTokens, value: jsonEncode(tokens.toJson()));
-  }
+  Future<void> saveTokens(AuthTokens t) =>
+      _storage.write(key: _kTokens, value: jsonEncode(t.toJson()));
 
   Future<AuthTokens?> loadTokens() async {
     final raw = await _storage.read(key: _kTokens);
@@ -216,9 +209,8 @@ class SecureStorageService {
     return AuthTokens.fromJson(jsonDecode(raw));
   }
 
-  Future<void> saveUser(TikTokUser user) async {
-    await _storage.write(key: _kUser, value: jsonEncode(user.toJson()));
-  }
+  Future<void> saveUser(TikTokUser u) =>
+      _storage.write(key: _kUser, value: jsonEncode(u.toJson()));
 
   Future<TikTokUser?> loadUser() async {
     final raw = await _storage.read(key: _kUser);
@@ -233,7 +225,7 @@ class SecureStorageService {
 }
 
 // ============================================================================
-// 4. AUTH SERVICE (OAuth 2.0 + PKCE with automatic refresh via Dio)
+// 4. AUTH SERVICE
 // ============================================================================
 
 class AuthException implements Exception {
@@ -245,17 +237,18 @@ class AuthException implements Exception {
 
 class AuthService {
   final SecureStorageService _storage;
-  AuthTokens? _tokens;
   final Dio _dio;
+  AuthTokens? _tokens;
 
-  AuthService(this._storage) : _dio = Dio() {
-    _dio.options.connectTimeout = const Duration(seconds: 30);
-    _dio.options.receiveTimeout = const Duration(seconds: 30);
-  }
+  AuthService(this._storage)
+      : _dio = Dio(BaseOptions(
+          connectTimeout: const Duration(seconds: 30),
+          receiveTimeout: const Duration(seconds: 30),
+        ));
 
   AuthTokens? get tokens => _tokens;
 
-  (String verifier, String challenge) _generatePKCE() {
+  (String, String) _generatePKCE() {
     final rand = Random.secure();
     final verifier = base64Url
         .encode(List.generate(32, (_) => rand.nextInt(256)))
@@ -289,71 +282,63 @@ class AuthService {
         callbackUrlScheme: AppConfig.callbackScheme,
       );
     } on PlatformException catch (e) {
-      throw AuthException('Authorization cancelled or error: ${e.message}');
+      throw AuthException('Authorization cancelled: ${e.message}');
     }
 
-    final callbackUri = Uri.parse(result);
-    final returnedState = callbackUri.queryParameters['state'];
-    final code = callbackUri.queryParameters['code'];
-    final error = callbackUri.queryParameters['error'];
+    final cb = Uri.parse(result);
+    if (cb.queryParameters['error'] != null) {
+      throw AuthException('Denied: ${cb.queryParameters['error']}');
+    }
+    if (cb.queryParameters['state'] != state) {
+      throw AuthException('State mismatch');
+    }
+    final code = cb.queryParameters['code'];
+    if (code == null) throw AuthException('No code received');
 
-    if (error != null) throw AuthException('TikTok denied authorization: $error');
-    if (returnedState != state) throw AuthException('State mismatch');
-    if (code == null) throw AuthException('No authorization code received');
-
-    return _exchangeCodeOnBackend(code, verifier);
+    return _exchangeCode(code, verifier);
   }
 
-  Future<AuthTokens> _exchangeCodeOnBackend(String code, String codeVerifier) async {
-    final response = await _dio.post(
+  Future<AuthTokens> _exchangeCode(String code, String verifier) async {
+    final resp = await _dio.post(
       '${AppConfig.backendBaseUrl}/auth/exchange',
       data: {
         'code': code,
-        'code_verifier': codeVerifier,
+        'code_verifier': verifier,
         'redirect_uri': AppConfig.redirectUri,
       },
       options: Options(headers: {'Content-Type': 'application/json'}),
     );
-
-    if (response.statusCode != 200) {
-      throw AuthException('Token exchange failed: ${response.statusCode}');
+    if (resp.statusCode != 200) {
+      throw AuthException('Exchange failed: ${resp.statusCode} ${resp.data}');
     }
-
-    _tokens = AuthTokens.fromJson(response.data);
+    _tokens = AuthTokens.fromJson(resp.data as Map<String, dynamic>);
     await _storage.saveTokens(_tokens!);
     return _tokens!;
   }
 
   Future<void> refreshToken() async {
-    if (_tokens == null) throw AuthException('No session to refresh');
-    final response = await _dio.post(
+    if (_tokens == null) throw AuthException('No session');
+    final resp = await _dio.post(
       '${AppConfig.backendBaseUrl}/auth/refresh',
       data: {'refresh_token': _tokens!.refreshToken},
       options: Options(headers: {'Content-Type': 'application/json'}),
     );
-    if (response.statusCode != 200) {
-      throw AuthException('Token refresh failed: ${response.statusCode}');
+    if (resp.statusCode != 200) {
+      throw AuthException('Refresh failed: ${resp.statusCode}');
     }
-    _tokens = AuthTokens.fromJson(response.data);
+    _tokens = AuthTokens.fromJson(resp.data as Map<String, dynamic>);
     await _storage.saveTokens(_tokens!);
   }
 
-  /// Revokes the access token on TikTok's side (official endpoint).
   Future<void> revokeToken() async {
     if (_tokens == null) return;
     try {
       await _dio.post(
-        AppConfig.tiktokRevokeUrl,
-        data: {
-          'client_key': AppConfig.clientKey,
-          'client_secret': '', // Client secret must be sent from backend in production
-          'token': _tokens!.accessToken,
-        },
-        options: Options(headers: {'Content-Type': 'application/x-www-form-urlencoded'}),
+        '${AppConfig.backendBaseUrl}/auth/revoke',
+        data: {'access_token': _tokens!.accessToken},
+        options: Options(headers: {'Content-Type': 'application/json'}),
       );
-    } catch (_) {
-      // Even if revoke fails, we clear local tokens.
-    }
+    } catch (_) {}
   }
 
   Future<void> restoreSession() async {
@@ -375,7 +360,7 @@ class AuthService {
 }
 
 // ============================================================================
-// 5. TIKTOK API SERVICE (using Dio + Smart Retry + Auto Token Refresh)
+// 5. TIKTOK API SERVICE (Dio + retry + auto-refresh)
 // ============================================================================
 
 class ApiException implements Exception {
@@ -397,7 +382,6 @@ class TikTokApiService {
       receiveTimeout: const Duration(seconds: 60),
     ));
 
-    // Automatic retry on network failures
     _dio.interceptors.add(RetryInterceptor(
       dio: _dio,
       retries: 3,
@@ -408,7 +392,6 @@ class TikTokApiService {
       ],
     ));
 
-    // Automatic token refresh & Authorization header injection
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
         if (_auth.tokens == null) {
@@ -420,17 +403,18 @@ class TikTokApiService {
         if (_auth.tokens!.isExpired) {
           await _auth.refreshToken();
         }
-        options.headers['Authorization'] = 'Bearer ${_auth.tokens!.accessToken}';
+        options.headers['Authorization'] =
+            'Bearer ${_auth.tokens!.accessToken}';
         options.headers['Content-Type'] = 'application/json';
         return handler.next(options);
       },
       onError: (error, handler) async {
-        // If 401, try refreshing once and retry
         if (error.response?.statusCode == 401 && _auth.tokens != null) {
           try {
             await _auth.refreshToken();
             final opts = error.requestOptions;
-            opts.headers['Authorization'] = 'Bearer ${_auth.tokens!.accessToken}';
+            opts.headers['Authorization'] =
+                'Bearer ${_auth.tokens!.accessToken}';
             final clone = await _dio.fetch(opts);
             return handler.resolve(clone);
           } catch (_) {
@@ -441,8 +425,6 @@ class TikTokApiService {
       },
     ));
   }
-
-  // ---------------- User Info ----------------
 
   static const _userFields = [
     'open_id', 'union_id', 'avatar_url', 'display_name', 'bio_description',
@@ -456,11 +438,9 @@ class TikTokApiService {
       queryParameters: {'fields': _userFields.join(',')},
     );
     _throwIfBad(resp);
-    final user = resp.data['data']['user'] as Map<String, dynamic>;
-    return TikTokUser.fromJson(user);
+    return TikTokUser.fromJson(
+        resp.data['data']['user'] as Map<String, dynamic>);
   }
-
-  // ---------------- Video List (POST) ----------------
 
   Future<List<TikTokVideo>> getVideos({
     int maxCount = AppConfig.maxVideosPerPage,
@@ -480,10 +460,8 @@ class TikTokApiService {
     );
     _throwIfBad(resp);
     final list = (resp.data['data']?['videos'] as List?) ?? [];
-    return list.map((e) => TikTokVideo.fromJson(e)).toList();
+    return list.map((e) => TikTokVideo.fromJson(e as Map<String, dynamic>)).toList();
   }
-
-  // ---------------- Video Upload (Chunked, Direct Post) ----------------
 
   Future<String> uploadVideo({
     required File videoFile,
@@ -497,12 +475,9 @@ class TikTokApiService {
   }) async {
     final fileSize = await videoFile.length();
     if (fileSize > AppConfig.maxVideoSize) {
-      throw ApiException('Video exceeds max size (${AppConfig.maxVideoSize ~/ (1024 * 1024)} MB)');
+      throw ApiException('Video too large');
     }
 
-    // TikTok chunk rules (Aug 2026):
-    // - If file <= 64 MB: upload as ONE whole chunk (chunk_size = fileSize, total_chunk_count = 1)
-    // - If file > 64 MB: chunk_size = 64 MB, total_chunk_count = floor(fileSize / chunkSize)
     final int chunkSize;
     final int totalChunks;
     if (fileSize <= AppConfig.maxChunkSize) {
@@ -510,10 +485,9 @@ class TikTokApiService {
       totalChunks = 1;
     } else {
       chunkSize = AppConfig.maxChunkSize;
-      totalChunks = fileSize ~/ chunkSize; // floor, NOT ceil
+      totalChunks = fileSize ~/ chunkSize;
     }
 
-    // 1. Initialize upload
     final initResp = await _dio.post(
       '/post/publish/video/init/',
       data: {
@@ -538,7 +512,6 @@ class TikTokApiService {
     final uploadUrl = initResp.data['data']['upload_url'] as String;
     final publishId = initResp.data['data']['publish_id'] as String;
 
-    // 2. Upload chunks sequentially
     final raf = await videoFile.open();
     try {
       for (int i = 0; i < totalChunks; i++) {
@@ -547,7 +520,7 @@ class TikTokApiService {
         final length = end - start + 1;
 
         await raf.setPosition(start);
-        final buffer = await raf.read(length);
+        final Uint8List buffer = await raf.read(length);
 
         final putResp = await Dio().put(
           uploadUrl,
@@ -561,8 +534,11 @@ class TikTokApiService {
           ),
         );
 
-        if (putResp.statusCode != null && (putResp.statusCode! < 200 || putResp.statusCode! >= 300)) {
-          throw ApiException('Chunk ${i + 1} upload failed: ${putResp.statusCode}');
+        if (putResp.statusCode == null ||
+            putResp.statusCode! < 200 ||
+            putResp.statusCode! >= 300) {
+          throw ApiException(
+              'Chunk ${i + 1} upload failed: ${putResp.statusCode}');
         }
         onProgress?.call((i + 1) / totalChunks);
       }
@@ -583,24 +559,31 @@ class TikTokApiService {
   }
 
   void _throwIfBad(Response resp) {
-    if (resp.statusCode != null && (resp.statusCode! < 200 || resp.statusCode! >= 300)) {
-      throw ApiException('TikTok API error (${resp.statusCode}): ${resp.data}', resp.statusCode);
+    if (resp.statusCode != null &&
+        (resp.statusCode! < 200 || resp.statusCode! >= 300)) {
+      throw ApiException(
+          'TikTok API error ${resp.statusCode}: ${resp.data}',
+          resp.statusCode);
     }
-    final errCode = resp.data['error']?['code'];
-    if (errCode != null && errCode != 'ok') {
-      throw ApiException('TikTok error: ${resp.data['error']['message'] ?? errCode}');
+    final data = resp.data;
+    if (data is Map<String, dynamic>) {
+      final errCode = data['error']?['code'];
+      if (errCode != null && errCode != 'ok') {
+        throw ApiException(
+            'TikTok error: ${data['error']['message'] ?? errCode}');
+      }
     }
   }
 }
 
 // ============================================================================
-// 6. APP STATE (Provider)
+// 6. APP STATE
 // ============================================================================
 
 class AppState extends ChangeNotifier {
   final SecureStorageService storage;
-  final AuthService auth;
-  final TikTokApiService api;
+  late final AuthService _auth;
+  late final TikTokApiService _api;
 
   AuthTokens? tokens;
   TikTokUser? user;
@@ -609,22 +592,13 @@ class AppState extends ChangeNotifier {
   bool isLoadingVideos = false;
   bool isLoggedIn = false;
   String? lastError;
-
   bool hasMoreVideos = true;
   int _nextCursor = 0;
 
-  AppState()
-      : storage = SecureStorageService(),
-        auth = AuthService(SecureStorageService()),
-        api = TikTokApiService(AuthService(SecureStorageService())) {
-    // Fix: share ONE AuthService instance between auth and api
-    final sharedAuth = AuthService(storage);
-    _auth = sharedAuth;
-    _api = TikTokApiService(sharedAuth);
+  AppState() : storage = SecureStorageService() {
+    _auth = AuthService(storage);
+    _api = TikTokApiService(_auth);
   }
-
-  late final AuthService _auth;
-  late final TikTokApiService _api;
 
   AuthService get authService => _auth;
   TikTokApiService get apiService => _api;
@@ -700,7 +674,6 @@ class AppState extends ChangeNotifier {
       videos = [];
     }
     if (!hasMoreVideos) return;
-
     isLoadingVideos = true;
     notifyListeners();
     try {
@@ -728,7 +701,7 @@ class AppState extends ChangeNotifier {
 }
 
 // ============================================================================
-// 7. MAIN APP
+// 7. MAIN
 // ============================================================================
 
 void main() {
@@ -779,7 +752,8 @@ class RequestApp extends StatelessWidget {
         elevation: 0,
         centerTitle: true,
       ),
-      cardTheme: CardTheme(
+      // FIX: في Flutter 3.47+ الخصيصة تقبل CardThemeData
+      cardTheme: CardThemeData(
         color: surface,
         elevation: 2,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -789,7 +763,8 @@ class RequestApp extends StatelessWidget {
           backgroundColor: pink,
           foregroundColor: Colors.white,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -806,7 +781,6 @@ class RequestApp extends StatelessWidget {
 
 class _RootRouter extends StatelessWidget {
   const _RootRouter();
-
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
@@ -815,7 +789,7 @@ class _RootRouter extends StatelessWidget {
 }
 
 // ============================================================================
-// 8. LOGIN SCREEN
+// 8. LOGIN
 // ============================================================================
 
 class LoginScreen extends StatelessWidget {
@@ -832,17 +806,16 @@ class LoginScreen extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               const Spacer(),
-              _LogoBadge(),
+              _logo(),
               const SizedBox(height: 32),
-              const Text(
-                'REQUEST',
-                style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, letterSpacing: 4),
-              ),
+              const Text('REQUEST',
+                  style: TextStyle(
+                      fontSize: 36,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 4)),
               const SizedBox(height: 8),
-              const Text(
-                'TikTok Account Manager',
-                style: TextStyle(fontSize: 16, color: Colors.white54),
-              ),
+              const Text('TikTok Account Manager',
+                  style: TextStyle(fontSize: 16, color: Colors.white54)),
               const SizedBox(height: 12),
               const Text(
                 'Full control over your TikTok account\n'
@@ -859,30 +832,32 @@ class LoginScreen extends StatelessWidget {
                     color: Colors.red.withOpacity(0.15),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Text(
-                    state.lastError!,
-                    style: const TextStyle(color: Colors.redAccent),
-                    textAlign: TextAlign.center,
-                  ),
+                  child: Text(state.lastError!,
+                      style: const TextStyle(color: Colors.redAccent),
+                      textAlign: TextAlign.center),
                 ),
               SizedBox(
                 width: double.infinity,
                 height: 56,
                 child: ElevatedButton.icon(
-                  onPressed: state.isLoadingUser ? null : () => state.login(),
+                  onPressed:
+                      state.isLoadingUser ? null : () => state.login(),
                   icon: state.isLoadingUser
                       ? const SizedBox(
-                          width: 20, height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                        )
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
                       : const Icon(Icons.login),
-                  label: Text(state.isLoadingUser ? 'Connecting to TikTok...' : 'Login with TikTok'),
+                  label: Text(state.isLoadingUser
+                      ? 'Connecting...'
+                      : 'Login with TikTok'),
                 ),
               ),
               const SizedBox(height: 16),
               const Text(
-                'Uses official TikTok OAuth 2.0 + PKCE.\n'
-                'Your password is never stored. You can revoke access anytime.',
+                'Official TikTok OAuth 2.0 + PKCE.\n'
+                'Password never stored. Revoke access anytime.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white38, fontSize: 12),
               ),
@@ -893,36 +868,31 @@ class LoginScreen extends StatelessWidget {
       ),
     );
   }
-}
 
-class _LogoBadge extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 120,
-      height: 120,
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF25F4EE), Color(0xFFFE2C55)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(32),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFFFE2C55).withOpacity(0.3),
-            blurRadius: 30,
-            spreadRadius: 5,
+  Widget _logo() => Container(
+        width: 120,
+        height: 120,
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF25F4EE), Color(0xFFFE2C55)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
           ),
-        ],
-      ),
-      child: const Icon(Icons.music_note, size: 64, color: Colors.white),
-    );
-  }
+          borderRadius: BorderRadius.circular(32),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFFFE2C55).withOpacity(0.3),
+              blurRadius: 30,
+              spreadRadius: 5,
+            ),
+          ],
+        ),
+        child: const Icon(Icons.music_note, size: 64, color: Colors.white),
+      );
 }
 
 // ============================================================================
-// 9. HOME SCREEN (Bottom Navigation)
+// 9. HOME
 // ============================================================================
 
 class HomeScreen extends StatefulWidget {
@@ -936,7 +906,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = const [
+    const pages = [
       ProfileTab(),
       VideosTab(),
       UploadTab(),
@@ -952,11 +922,26 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: const Color(0xFF1C1C1E),
         indicatorColor: const Color(0xFFFE2C55).withOpacity(0.25),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: 'Profile'),
-          NavigationDestination(icon: Icon(Icons.video_library_outlined), selectedIcon: Icon(Icons.video_library), label: 'Videos'),
-          NavigationDestination(icon: Icon(Icons.cloud_upload_outlined), selectedIcon: Icon(Icons.cloud_upload), label: 'Upload'),
-          NavigationDestination(icon: Icon(Icons.analytics_outlined), selectedIcon: Icon(Icons.analytics), label: 'Analytics'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
+          NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person),
+              label: 'Profile'),
+          NavigationDestination(
+              icon: Icon(Icons.video_library_outlined),
+              selectedIcon: Icon(Icons.video_library),
+              label: 'Videos'),
+          NavigationDestination(
+              icon: Icon(Icons.cloud_upload_outlined),
+              selectedIcon: Icon(Icons.cloud_upload),
+              label: 'Upload'),
+          NavigationDestination(
+              icon: Icon(Icons.analytics_outlined),
+              selectedIcon: Icon(Icons.analytics),
+              label: 'Analytics'),
+          NavigationDestination(
+              icon: Icon(Icons.settings_outlined),
+              selectedIcon: Icon(Icons.settings),
+              label: 'Settings'),
         ],
       ),
     );
@@ -964,7 +949,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // ============================================================================
-// 10. PROFILE TAB
+// 10. PROFILE
 // ============================================================================
 
 class ProfileTab extends StatelessWidget {
@@ -974,7 +959,6 @@ class ProfileTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final user = state.user;
-
     return RefreshIndicator(
       onRefresh: state.refreshAll,
       color: const Color(0xFFFE2C55),
@@ -984,10 +968,15 @@ class ProfileTab extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Text('My Profile', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const Text('My Profile',
+                  style:
+                      TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
               const Spacer(),
               if (state.isLoadingUser)
-                const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2)),
             ],
           ),
           const SizedBox(height: 20),
@@ -1020,8 +1009,12 @@ class _ProfileCard extends StatelessWidget {
                 CircleAvatar(
                   radius: 40,
                   backgroundColor: Colors.grey.shade800,
-                  backgroundImage: user.avatarUrl.isNotEmpty ? NetworkImage(user.avatarUrl) : null,
-                  child: user.avatarUrl.isEmpty ? const Icon(Icons.person, size: 40) : null,
+                  backgroundImage: user.avatarUrl.isNotEmpty
+                      ? NetworkImage(user.avatarUrl)
+                      : null,
+                  child: user.avatarUrl.isEmpty
+                      ? const Icon(Icons.person, size: 40)
+                      : null,
                 ),
                 const SizedBox(width: 16),
                 Expanded(
@@ -1031,16 +1024,17 @@ class _ProfileCard extends StatelessWidget {
                       Row(
                         children: [
                           Flexible(
-                            child: Text(
-                              user.displayName,
-                              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                              overflow: TextOverflow.ellipsis,
-                            ),
+                            child: Text(user.displayName,
+                                style: const TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold),
+                                overflow: TextOverflow.ellipsis),
                           ),
                           if (user.isVerified)
                             const Padding(
                               padding: EdgeInsets.only(left: 6),
-                              child: Icon(Icons.verified, color: Color(0xFF25F4EE), size: 20),
+                              child: Icon(Icons.verified,
+                                  color: Color(0xFF25F4EE), size: 20),
                             ),
                         ],
                       ),
@@ -1056,7 +1050,9 @@ class _ProfileCard extends StatelessWidget {
             ),
             if (user.bioDescription.isNotEmpty) ...[
               const SizedBox(height: 16),
-              Text(user.bioDescription, style: const TextStyle(color: Colors.white70, height: 1.5)),
+              Text(user.bioDescription,
+                  style: const TextStyle(
+                      color: Colors.white70, height: 1.5)),
             ],
             if (user.profileDeepLink.isNotEmpty) ...[
               const SizedBox(height: 16),
@@ -1064,7 +1060,8 @@ class _ProfileCard extends StatelessWidget {
                 onPressed: () async {
                   final uri = Uri.parse(user.profileDeepLink);
                   if (await canLaunchUrl(uri)) {
-                    await launchUrl(uri, mode: LaunchMode.externalApplication);
+                    await launchUrl(uri,
+                        mode: LaunchMode.externalApplication);
                   }
                 },
                 icon: const Icon(Icons.open_in_new),
@@ -1073,7 +1070,9 @@ class _ProfileCard extends StatelessWidget {
             ],
             const Divider(height: 32, color: Colors.white12),
             const _InfoRow(label: 'Account ID', value: ''),
-            SelectableText(user.openId, style: const TextStyle(fontSize: 12, color: Colors.white54)),
+            SelectableText(user.openId,
+                style:
+                    const TextStyle(fontSize: 12, color: Colors.white54)),
             const SizedBox(height: 8),
             _InfoRow(label: 'Union ID', value: user.unionId),
           ],
@@ -1093,10 +1092,14 @@ class _InfoRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          Text(label, style: const TextStyle(color: Colors.white54, fontSize: 13)),
+          Text(label,
+              style: const TextStyle(color: Colors.white54, fontSize: 13)),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(value, style: const TextStyle(fontSize: 13, color: Colors.white70), overflow: TextOverflow.ellipsis),
+            child: Text(value,
+                style:
+                    const TextStyle(fontSize: 13, color: Colors.white70),
+                overflow: TextOverflow.ellipsis),
           ),
         ],
       ),
@@ -1107,18 +1110,23 @@ class _InfoRow extends StatelessWidget {
 class _QuickStats extends StatelessWidget {
   final TikTokUser user;
   const _QuickStats({required this.user});
-
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Expanded(child: _StatCard(label: 'Followers', value: user.followerCount)),
+        Expanded(
+            child:
+                _StatCard(label: 'Followers', value: user.followerCount)),
         const SizedBox(width: 8),
-        Expanded(child: _StatCard(label: 'Following', value: user.followingCount)),
+        Expanded(
+            child: _StatCard(
+                label: 'Following', value: user.followingCount)),
         const SizedBox(width: 8),
-        Expanded(child: _StatCard(label: 'Likes', value: user.likesCount)),
+        Expanded(
+            child: _StatCard(label: 'Likes', value: user.likesCount)),
         const SizedBox(width: 8),
-        Expanded(child: _StatCard(label: 'Videos', value: user.videoCount)),
+        Expanded(
+            child: _StatCard(label: 'Videos', value: user.videoCount)),
       ],
     );
   }
@@ -1128,7 +1136,6 @@ class _StatCard extends StatelessWidget {
   final String label;
   final int value;
   const _StatCard({required this.label, required this.value});
-
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -1140,9 +1147,13 @@ class _StatCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Text(_formatNumber(value), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(_formatNumber(value),
+              style: const TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
-          Text(label, style: const TextStyle(fontSize: 11, color: Colors.white54)),
+          Text(label,
+              style:
+                  const TextStyle(fontSize: 11, color: Colors.white54)),
         ],
       ),
     );
@@ -1156,7 +1167,7 @@ String _formatNumber(int n) {
 }
 
 // ============================================================================
-// 11. VIDEOS TAB
+// 11. VIDEOS
 // ============================================================================
 
 class VideosTab extends StatefulWidget {
@@ -1175,7 +1186,8 @@ class _VideosTabState extends State<VideosTab> {
   }
 
   void _onScroll() {
-    if (_controller.position.pixels >= _controller.position.maxScrollExtent - 300) {
+    if (_controller.position.pixels >=
+        _controller.position.maxScrollExtent - 300) {
       context.read<AppState>().loadMoreVideos();
     }
   }
@@ -1189,19 +1201,25 @@ class _VideosTabState extends State<VideosTab> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
             children: [
-              const Text('My Videos', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const Text('My Videos',
+                  style:
+                      TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
               const SizedBox(width: 8),
-              Chip(label: Text('${state.videos.length}'), backgroundColor: const Color(0xFF1C1C1E)),
+              Chip(
+                label: Text('${state.videos.length}'),
+                backgroundColor: const Color(0xFF1C1C1E),
+              ),
               const Spacer(),
               IconButton(
-                onPressed: state.isLoadingVideos ? null : () => state.loadVideos(reset: true),
+                onPressed: state.isLoadingVideos
+                    ? null
+                    : () => state.loadVideos(reset: true),
                 icon: const Icon(Icons.refresh),
               ),
             ],
@@ -1216,18 +1234,24 @@ class _VideosTabState extends State<VideosTab> {
                 : state.videos.isEmpty
                     ? ListView(children: const [
                         SizedBox(height: 100),
-                        _EmptyState(message: 'No videos found, or video.list scope not granted'),
+                        _EmptyState(
+                            message:
+                                'No videos found, or video.list scope not granted'),
                       ])
                     : ListView.separated(
                         controller: _controller,
                         padding: const EdgeInsets.all(16),
-                        itemCount: state.videos.length + (state.hasMoreVideos ? 1 : 0),
-                        separatorBuilder: (_, __) => const SizedBox(height: 12),
+                        itemCount: state.videos.length +
+                            (state.hasMoreVideos ? 1 : 0),
+                        separatorBuilder: (_, __) =>
+                            const SizedBox(height: 12),
                         itemBuilder: (_, i) {
                           if (i == state.videos.length) {
                             return const Padding(
                               padding: EdgeInsets.all(16),
-                              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                              child: Center(
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2)),
                             );
                           }
                           return _VideoCard(video: state.videos[i]);
@@ -1243,7 +1267,6 @@ class _VideosTabState extends State<VideosTab> {
 class _VideoCard extends StatelessWidget {
   final TikTokVideo video;
   const _VideoCard({required this.video});
-
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -1258,9 +1281,10 @@ class _VideoCard extends StatelessWidget {
                 width: 72,
                 height: 96,
                 child: video.coverUrl.isNotEmpty
-                    ? Image.network(video.coverUrl, fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => _videoPlaceholder())
-                    : _videoPlaceholder(),
+                    ? Image.network(video.coverUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => _placeholder())
+                    : _placeholder(),
               ),
             ),
             const SizedBox(width: 12),
@@ -1277,29 +1301,33 @@ class _VideoCard extends StatelessWidget {
                   if (video.description.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        video.description,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.white54, fontSize: 12),
-                      ),
+                      child: Text(video.description,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white54, fontSize: 12)),
                     ),
                   const SizedBox(height: 8),
                   Row(
                     children: [
-                      _miniStat(Icons.visibility, _formatNumber(video.viewCount)),
+                      _mini(Icons.visibility,
+                          _formatNumber(video.viewCount)),
                       const SizedBox(width: 12),
-                      _miniStat(Icons.favorite, _formatNumber(video.likeCount)),
+                      _mini(Icons.favorite,
+                          _formatNumber(video.likeCount)),
                       const SizedBox(width: 12),
-                      _miniStat(Icons.comment, _formatNumber(video.commentCount)),
+                      _mini(Icons.comment,
+                          _formatNumber(video.commentCount)),
                       const SizedBox(width: 12),
-                      _miniStat(Icons.share, _formatNumber(video.shareCount)),
+                      _mini(Icons.share, _formatNumber(video.shareCount)),
                     ],
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    DateFormat('yyyy-MM-dd HH:mm').format(video.createTime),
-                    style: const TextStyle(color: Colors.white38, fontSize: 11),
+                    DateFormat('yyyy-MM-dd HH:mm')
+                        .format(video.createTime),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11),
                   ),
                 ],
               ),
@@ -1310,22 +1338,24 @@ class _VideoCard extends StatelessWidget {
     );
   }
 
-  Widget _videoPlaceholder() => Container(
+  Widget _placeholder() => Container(
         color: Colors.black26,
         child: const Icon(Icons.videocam, color: Colors.white24),
       );
 
-  Widget _miniStat(IconData icon, String val) => Row(
+  Widget _mini(IconData icon, String val) => Row(
         children: [
           Icon(icon, size: 14, color: Colors.white54),
           const SizedBox(width: 3),
-          Text(val, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+          Text(val,
+              style: const TextStyle(
+                  fontSize: 11, color: Colors.white70)),
         ],
       );
 }
 
 // ============================================================================
-// 12. UPLOAD TAB
+// 12. UPLOAD
 // ============================================================================
 
 class UploadTab extends StatefulWidget {
@@ -1372,8 +1402,12 @@ class _UploadTabState extends State<UploadTab> {
   Future<void> _upload() async {
     final state = context.read<AppState>();
     if (_videoFile == null) return _snack('Select a video first');
-    if (_titleController.text.trim().isEmpty) return _snack('Enter a title');
-    if (_fileSize > AppConfig.maxVideoSize) return _snack('Video exceeds max size');
+    if (_titleController.text.trim().isEmpty) {
+      return _snack('Enter a title');
+    }
+    if (_fileSize > AppConfig.maxVideoSize) {
+      return _snack('Video exceeds max size');
+    }
 
     setState(() {
       _isUploading = true;
@@ -1395,7 +1429,8 @@ class _UploadTabState extends State<UploadTab> {
           if (mounted) {
             setState(() {
               _progress = p;
-              _statusMessage = 'Uploading: ${(p * 100).toStringAsFixed(0)}%';
+              _statusMessage =
+                  'Uploading: ${(p * 100).toStringAsFixed(0)}%';
             });
           }
         },
@@ -1408,7 +1443,8 @@ class _UploadTabState extends State<UploadTab> {
 
       for (int i = 0; i < 20; i++) {
         await Future.delayed(const Duration(seconds: 3));
-        final status = await state.apiService.getPublishStatus(publishId);
+        final status =
+            await state.apiService.getPublishStatus(publishId);
         final st = status['status'] as String? ?? '';
         if (mounted) setState(() => _statusMessage = 'Status: $st');
         if (st == 'PUBLISH_COMPLETE' || st == 'FAILED') break;
@@ -1438,7 +1474,9 @@ class _UploadTabState extends State<UploadTab> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Upload New Video', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+        const Text('Upload New Video',
+            style:
+                TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
         const SizedBox(height: 16),
         GestureDetector(
           onTap: _isUploading ? null : _pickVideo,
@@ -1454,26 +1492,35 @@ class _UploadTabState extends State<UploadTab> {
                   ? const Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.cloud_upload_outlined, size: 48, color: Colors.white54),
+                        Icon(Icons.cloud_upload_outlined,
+                            size: 48, color: Colors.white54),
                         SizedBox(height: 8),
-                        Text('Tap to select video', style: TextStyle(color: Colors.white54)),
+                        Text('Tap to select video',
+                            style:
+                                TextStyle(color: Colors.white54)),
                       ],
                     )
                   : Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.check_circle, size: 48, color: Color(0xFF25F4EE)),
+                        const Icon(Icons.check_circle,
+                            size: 48, color: Color(0xFF25F4EE)),
                         const SizedBox(height: 8),
                         Text(
-                          _videoFile!.path.split(Platform.pathSeparator).last,
-                          style: const TextStyle(color: Colors.white70),
+                          _videoFile!.path
+                              .split(Platform.pathSeparator)
+                              .last,
+                          style: const TextStyle(
+                              color: Colors.white70),
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
                         const SizedBox(height: 4),
                         Text(
                           '${(_fileSize / (1024 * 1024)).toStringAsFixed(2)} MB',
-                          style: const TextStyle(color: Colors.white38, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 12),
                         ),
                       ],
                     ),
@@ -1483,25 +1530,34 @@ class _UploadTabState extends State<UploadTab> {
         const SizedBox(height: 16),
         TextField(
           controller: _titleController,
-          decoration: const InputDecoration(labelText: 'Title', hintText: 'Video title'),
+          decoration: const InputDecoration(
+              labelText: 'Title', hintText: 'Video title'),
         ),
         const SizedBox(height: 12),
         TextField(
           controller: _descController,
           maxLines: 3,
-          decoration: const InputDecoration(labelText: 'Description (optional)', hintText: 'Video description'),
+          decoration: const InputDecoration(
+              labelText: 'Description (optional)',
+              hintText: 'Video description'),
         ),
         const SizedBox(height: 16),
-        const Text('Privacy', style: TextStyle(color: Colors.white70)),
+        const Text('Privacy',
+            style: TextStyle(color: Colors.white70)),
         const SizedBox(height: 8),
         SegmentedButton<String>(
           segments: const [
             ButtonSegment(value: 'SELF_ONLY', label: Text('Only me')),
-            ButtonSegment(value: 'MUTUAL_FOLLOW_FRIENDS', label: Text('Friends')),
-            ButtonSegment(value: 'PUBLIC_TO_EVERYONE', label: Text('Public')),
+            ButtonSegment(
+                value: 'MUTUAL_FOLLOW_FRIENDS',
+                label: Text('Friends')),
+            ButtonSegment(
+                value: 'PUBLIC_TO_EVERYONE',
+                label: Text('Public')),
           ],
           selected: {_privacy},
-          onSelectionChanged: (s) => setState(() => _privacy = s.first),
+          onSelectionChanged: (s) =>
+              setState(() => _privacy = s.first),
         ),
         const SizedBox(height: 16),
         SwitchListTile(
@@ -1528,7 +1584,10 @@ class _UploadTabState extends State<UploadTab> {
           ),
           const SizedBox(height: 8),
           if (_statusMessage != null)
-            Text(_statusMessage!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white54)),
+            Text(_statusMessage!,
+                textAlign: TextAlign.center,
+                style:
+                    const TextStyle(color: Colors.white54)),
           const SizedBox(height: 16),
         ],
         SizedBox(
@@ -1536,14 +1595,21 @@ class _UploadTabState extends State<UploadTab> {
           child: ElevatedButton.icon(
             onPressed: _isUploading ? null : _upload,
             icon: _isUploading
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white))
                 : const Icon(Icons.upload),
-            label: Text(_isUploading ? 'Uploading...' : 'Upload to TikTok'),
+            label: Text(
+                _isUploading ? 'Uploading...' : 'Upload to TikTok'),
           ),
         ),
         if (_publishId != null) ...[
           const SizedBox(height: 12),
-          Text('Publish ID: $_publishId', style: const TextStyle(color: Colors.white38, fontSize: 11)),
+          Text('Publish ID: $_publishId',
+              style: const TextStyle(
+                  color: Colors.white38, fontSize: 11)),
         ],
       ],
     );
@@ -1551,25 +1617,31 @@ class _UploadTabState extends State<UploadTab> {
 }
 
 // ============================================================================
-// 13. ANALYTICS TAB
+// 13. ANALYTICS
 // ============================================================================
 
 class AnalyticsTab extends StatelessWidget {
   const AnalyticsTab({super.key});
-
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final user = state.user;
-    if (user == null) return const Center(child: CircularProgressIndicator());
-
-    final totalViews = state.videos.fold<int>(0, (s, v) => s + v.viewCount);
-    final totalLikes = state.videos.fold<int>(0, (s, v) => s + v.likeCount);
-    final totalComments = state.videos.fold<int>(0, (s, v) => s + v.commentCount);
-    final totalShares = state.videos.fold<int>(0, (s, v) => s + v.shareCount);
+    if (user == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final totalViews =
+        state.videos.fold<int>(0, (s, v) => s + v.viewCount);
+    final totalLikes =
+        state.videos.fold<int>(0, (s, v) => s + v.likeCount);
+    final totalComments =
+        state.videos.fold<int>(0, (s, v) => s + v.commentCount);
+    final totalShares =
+        state.videos.fold<int>(0, (s, v) => s + v.shareCount);
     final avgEngagement = totalViews == 0
         ? 0.0
-        : ((totalLikes + totalComments + totalShares) / totalViews * 100);
+        : ((totalLikes + totalComments + totalShares) /
+                totalViews *
+                100);
 
     return RefreshIndicator(
       onRefresh: state.refreshAll,
@@ -1577,7 +1649,9 @@ class AnalyticsTab extends StatelessWidget {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('Analytics', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+          const Text('Analytics',
+              style:
+                  TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
           const SizedBox(height: 16),
           Card(
             child: Padding(
@@ -1585,12 +1659,16 @@ class AnalyticsTab extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Account Info', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  const Text('Account Info',
+                      style: TextStyle(
+                          color: Colors.white54, fontSize: 12)),
                   const SizedBox(height: 8),
-                  _analyticsRow('Total Followers', _formatNumber(user.followerCount)),
-                  _analyticsRow('Total Likes', _formatNumber(user.likesCount)),
-                  _analyticsRow('Video Count', _formatNumber(user.videoCount)),
-                  _analyticsRow('Verification', user.isVerified ? 'Verified ✅' : 'Not verified'),
+                  _row('Total Followers',
+                      _formatNumber(user.followerCount)),
+                  _row('Total Likes', _formatNumber(user.likesCount)),
+                  _row('Video Count', _formatNumber(user.videoCount)),
+                  _row('Verification',
+                      user.isVerified ? 'Verified ✅' : 'Not verified'),
                 ],
               ),
             ),
@@ -1602,14 +1680,17 @@ class AnalyticsTab extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Last ${state.videos.length} Videos Summary',
-                      style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                  Text(
+                      'Last ${state.videos.length} Videos Summary',
+                      style: const TextStyle(
+                          color: Colors.white54, fontSize: 12)),
                   const SizedBox(height: 8),
-                  _analyticsRow('Total Views', _formatNumber(totalViews)),
-                  _analyticsRow('Total Likes', _formatNumber(totalLikes)),
-                  _analyticsRow('Total Comments', _formatNumber(totalComments)),
-                  _analyticsRow('Total Shares', _formatNumber(totalShares)),
-                  _analyticsRow('Avg. Engagement', '${avgEngagement.toStringAsFixed(2)}%'),
+                  _row('Total Views', _formatNumber(totalViews)),
+                  _row('Total Likes', _formatNumber(totalLikes)),
+                  _row('Total Comments', _formatNumber(totalComments)),
+                  _row('Total Shares', _formatNumber(totalShares)),
+                  _row('Avg. Engagement',
+                      '${avgEngagement.toStringAsFixed(2)}%'),
                 ],
               ),
             ),
@@ -1621,14 +1702,19 @@ class AnalyticsTab extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Session & Authorization', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  const Text('Session & Authorization',
+                      style: TextStyle(
+                          color: Colors.white54, fontSize: 12)),
                   const SizedBox(height: 8),
-                  _analyticsRow('Open ID', user.openId),
-                  _analyticsRow('Union ID', user.unionId),
-                  _analyticsRow(
+                  _row('Open ID', user.openId),
+                  _row('Union ID', user.unionId),
+                  _row(
                     'Token Expiry',
                     DateFormat('yyyy-MM-dd HH:mm').format(
-                      state.tokens?.issuedAt.add(Duration(seconds: state.tokens?.expiresIn ?? 86400)) ?? DateTime.now(),
+                      state.tokens?.issuedAt.add(Duration(
+                              seconds:
+                                  state.tokens?.expiresIn ?? 86400)) ??
+                          DateTime.now(),
                     ),
                   ),
                 ],
@@ -1640,38 +1726,48 @@ class AnalyticsTab extends StatelessWidget {
     );
   }
 
-  Widget _analyticsRow(String label, String value) => Padding(
+  Widget _row(String label, String value) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: Row(
           children: [
-            Expanded(child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 13))),
-            Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            Expanded(
+                child: Text(label,
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 13))),
+            Text(value,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold)),
           ],
         ),
       );
 }
 
 // ============================================================================
-// 14. SETTINGS TAB
+// 14. SETTINGS
 // ============================================================================
 
 class SettingsTab extends StatelessWidget {
   const SettingsTab({super.key});
-
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Settings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+        const Text('Settings',
+            style:
+                TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
         const SizedBox(height: 16),
         Card(
           child: ListTile(
             leading: const Icon(Icons.refresh),
             title: const Text('Refresh All Data'),
             trailing: state.isLoadingUser || state.isLoadingVideos
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.chevron_right),
             onTap: state.refreshAll,
           ),
@@ -1686,7 +1782,8 @@ class SettingsTab extends StatelessWidget {
                 await state.authService.refreshToken();
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Token refreshed')),
+                    const SnackBar(
+                        content: Text('Token refreshed')),
                   );
                 }
               } catch (e) {
@@ -1702,17 +1799,24 @@ class SettingsTab extends StatelessWidget {
         Card(
           child: ListTile(
             leading: const Icon(Icons.logout, color: Colors.redAccent),
-            title: const Text('Logout', style: TextStyle(color: Colors.redAccent)),
-            subtitle: const Text('Revokes token and clears local session'),
+            title: const Text('Logout',
+                style: TextStyle(color: Colors.redAccent)),
+            subtitle: const Text(
+                'Revokes token and clears local session'),
             onTap: () async {
               final confirm = await showDialog<bool>(
                 context: context,
                 builder: (ctx) => AlertDialog(
                   title: const Text('Logout'),
-                  content: const Text('This will revoke your TikTok access token and clear the local session.'),
+                  content: const Text(
+                      'This will revoke your TikTok access token and clear the local session.'),
                   actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                    ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Logout')),
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('Cancel')),
+                    ElevatedButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('Logout')),
                   ],
                 ),
               );
@@ -1734,7 +1838,7 @@ class SettingsTab extends StatelessWidget {
 }
 
 // ============================================================================
-// 15. SHARED WIDGETS
+// 15. SHARED
 // ============================================================================
 
 class _EmptyState extends StatelessWidget {
@@ -1748,87 +1852,15 @@ class _EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.info_outline, size: 48, color: Colors.white38),
+            const Icon(Icons.info_outline, size: 48,
+                color: Colors.white38),
             const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white54)),
+            Text(message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white54)),
           ],
         ),
       ),
     );
   }
 }
-
-// ============================================================================
-// BACKEND REFERENCE (Node.js / Express) – Deploy this on your server
-// ============================================================================
-// package.json: express, axios, dotenv, cors
-// server.js:
-// -----------
-// require('dotenv').config();
-// const express = require('express');
-// const axios = require('axios');
-// const cors = require('cors');
-//
-// const app = express();
-// app.use(cors());
-// app.use(express.json());
-//
-// const CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY;
-// const CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET;
-//
-// app.post('/auth/exchange', async (req, res) => {
-//   try {
-//     const { code, code_verifier, redirect_uri } = req.body;
-//     const params = new URLSearchParams({
-//       client_key: CLIENT_KEY,
-//       client_secret: CLIENT_SECRET,
-//       code,
-//       grant_type: 'authorization_code',
-//       redirect_uri,
-//       code_verifier,
-//     });
-//     const { data } = await axios.post(
-//       'https://open.tiktokapis.com/v2/oauth/token/',
-//       params.toString(),
-//       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-//     );
-//     res.json({
-//       access_token: data.access_token,
-//       refresh_token: data.refresh_token,
-//       open_id: data.open_id,
-//       expires_in: data.expires_in,
-//       issued_at: new Date().toISOString(),
-//     });
-//   } catch (e) {
-//     res.status(500).json({ error: e.response?.data || e.message });
-//   }
-// });
-//
-// app.post('/auth/refresh', async (req, res) => {
-//   try {
-//     const { refresh_token } = req.body;
-//     const params = new URLSearchParams({
-//       client_key: CLIENT_KEY,
-//       client_secret: CLIENT_SECRET,
-//       grant_type: 'refresh_token',
-//       refresh_token,
-//     });
-//     const { data } = await axios.post(
-//       'https://open.tiktokapis.com/v2/oauth/token/',
-//       params.toString(),
-//       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-//     );
-//     res.json({
-//       access_token: data.access_token,
-//       refresh_token: data.refresh_token,
-//       open_id: data.open_id,
-//       expires_in: data.expires_in,
-//       issued_at: new Date().toISOString(),
-//     });
-//   } catch (e) {
-//     res.status(500).json({ error: e.response?.data || e.message });
-//   }
-// });
-//
-// app.listen(process.env.PORT || 3000);
-// ============================================================================
